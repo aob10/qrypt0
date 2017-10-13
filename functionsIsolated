@@ -1,0 +1,359 @@
+
+#----------------------
+#chooseFile.sh
+#----------------------
+
+chooseFile () 
+{
+
+# list choice of files in directory
+printf "\n"
+ls
+printf "\n"
+
+# user enters name of chosen file to encrypt
+read -p 'enter filename: ' chosenFile
+
+}
+
+#----------------------
+#counterTimestamp.sh
+#----------------------
+
+counterTimestamp()
+{
+
+# increase integer contained in file messageCounter
+counter=$(cat messageCounter)
+let counter++
+printf "%s" "$counter" > messageCounter
+
+# include message counter in plaintextfile
+printf "%s\n" "message number: $counter" | cat - $chosenFile >> intermediateFile
+mv intermediateFile $chosenFile
+
+# establish timestamp 
+fileDate=$(date "+-%y%b%d-%H.%M.%S")
+
+# add timestamp to plaintext file and to its filename
+printf "%s\n" "$fileDate" | cat - $chosenFile >> $chosenFile$fileDate
+
+}
+
+
+#----------------------
+#authenticateFile.sh
+#----------------------
+
+authenticateFile()
+{
+
+# user types in key
+read -p "enter key: " sessionKey
+
+# derive authentication key
+printf "%s" $sessionKey | cat - keyChoiceAuth > authKeyFile5
+hash=$(gpg --with-colons --print-md sha256 authKeyFile5)
+
+# write raw authentication key 'hash' to file authKeyFile4, then remove formatting to get authKeyFile
+printf "%s\n" "$hash" 			> authKeyFile4
+sed '1s/:/\n delete\n/g' authKeyFile4 	> authKeyFile3
+sed '1,/delete/d' authKeyFile3 		> authKeyFile2
+sed '1,/delete/d' authKeyFile2 		> authKeyFile1
+sed /'delete'/,'$'d authKeyFile1 	> authKeyFile
+
+# erase 5 auxiliary files authKeyFile1, ..., authKeyFile5 
+srm -m authKeyFile?
+
+# write contents of authKeyFile into variable authKey
+authKey=$(cat authKeyFile)
+
+# calculate hmac of $inputfile using authKey
+authLine=$(cat $inputfile | openssl dgst -sha256 -hmac $authKey)
+
+# store hmac in authLineFile
+printf "%s\n" "$authLine" > authLineFile
+
+# add hmac contained in authLineFile to $inputfile
+cat authLineFile $inputfile > auth$inputfile
+mv auth$inputfile $inputfile
+  
+# erase now unnecessary files 
+srm -m authLineFile
+srm -m authKeyFile
+
+}
+
+#----------------------
+#encryptFile.sh
+#----------------------
+
+encryptFile () 
+{
+
+printf "%s\n" "file $inputfile will be encrypted"
+
+# length up to which message is padded
+lengthToPad=1750
+
+# add 'endOfFile' on new line
+printf "endOfFile\n" >> $inputfile
+
+# determine length of $inputfile
+lengthFile=$(wc $inputfile | awk '{ print $3 }')
+
+# calculate difference (lengthToPad - lengthFile)
+n=$((lengthToPad - lengthFile))
+
+if [ $n -gt 0 ]
+then
+# padding added
+
+# form file padPart, n-10 takes into account length of 'endOfFile'
+# 'openssl rand' uses the number of bytes as output, in base64 encoding 3 bytes produce 4 characters as output
+openssl rand -out padPart -base64 $(((3 * ($n-10))/4))
+
+# attach pad to message
+cat $inputfile padPart > padded$inputfile
+mv padded$inputfile $inputfile
+
+# erase padPart
+rm  padPart
+
+# encrypt $inputfile
+read -p "enter key: " keystring
+gpg --armour --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count=65011712 --batch --passphrase $keystring -c --symmetric $inputfile
+
+# remove plaintext $inputfile
+srm -m $inputfile
+
+
+
+else
+# padding not added
+
+# encrypt $inputfile
+read -p "enter key: " keystring
+gpg --armour --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count=65011712 --batch --passphrase $keystring -c --symmetric $inputfile
+
+# remove plaintext $inputfile
+srm -m $inputfile
+
+fi 
+
+}
+
+
+#----------------------
+#encodeFile.sh
+#----------------------
+
+encodeFile() 
+{
+
+# capacity of QR code
+qrBound=2100
+
+# determine size of $fileToEncode
+fileDataArray=( $(cksum $fileToEncode) )
+filesize=${fileDataArray[1]}
+
+# can $fileToEncode fit into QR code?
+if [ $filesize -lt $((qrBound)) ]
+then
+  printf "%s\n" "file $fileToEncode will be encoded in QR code"
+
+  # create postscript file containing QR code
+  cat firstPart.ps $fileToEncode secondPart.ps > $fileToEncode.ps
+else
+  printf "%s\n" "$fileToEncode does not fit into a QR code"
+fi
+
+}
+
+
+#----------------------
+#scanQRcode.sh
+#----------------------
+
+scanQRcode () 
+{
+
+# identify user name needed for path to directory used by QR Journal
+identity=$(whoami)
+
+# start QR Journal
+open -a QR\ Journal
+
+# print scanning instructions
+printf "%s\n" "click 'Scan'" 
+printf "%s\n" "hold QR code in front of camera until image on screen freezes" 
+printf "%s\n" "click 'Save'" 
+printf "%s\n" "click 'Close'" 
+printf "%s\n" "quit QR Journal"
+
+# ask user for filename
+read -p "enter filename for QR scan: " scannedFile
+
+# identify file containing scanned text
+qrScanData=/Users/$identity/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application\ Support/QRJournal/QRJournal.storedata
+
+}
+
+
+#----------------------
+#stripFile.sh
+#----------------------
+
+stripFile () 
+{
+
+# strip away xml formatting from file qrScanData
+
+# enter marker string 'delete until here' on its own line before PGP cipher text
+sed s/'-----BEGIN PGP MESSAGE-----'/'\ndelete until here\n-----BEGIN PGP MESSAGE-----'/g "$qrScanData" > qrScanData3
+
+
+# delete formatting from first line up to the marker string 'delete until here'
+sed 1,/'delete until here'/d qrScanData3 > qrScanData2
+
+
+# enter marker string 'delete from here' on its own line after PGP cipher text
+sed s/'-----END PGP MESSAGE-----'/'-----END PGP MESSAGE-----\ndelete from here\n'/g qrScanData2 > qrScanData1
+
+
+# delete formatting from the marker string 'delete from here' to last line
+sed /'delete from here'/,'$'d qrScanData1 > $scannedFile.asc
+
+
+# erase intermediate files 
+rm qrScanData?
+
+# erase scanned image and text file containing scanned text
+olddir=$(pwd)
+cd "/Users/$identity/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application Support/QRJournal"
+rm *.jpg
+rm QRJournal.storedata
+cd $olddir
+
+}
+
+#----------------------
+#decryptFile.sh
+#----------------------
+
+decryptFile () 
+{
+
+# decrypt $scannedFile.asc to $scannedFile
+printf "%s\n" "file $scannedFile.asc will be decrypted"
+read -p "enter key: " keystring
+printf "%s" "$keystring" | gpg -o $scannedFile --batch --passphrase-fd 0 --decrypt $scannedFile.asc
+
+# reverse sequence of lines
+sed -n '1!G;h;$p' $scannedFile > reversefile
+
+# remove lines up to endOfFile
+sed 1,/'endOfFile'/d reversefile > reversefilestripped
+
+# reverse sequence of lines again
+sed -n '1!G;h;$p' reversefilestripped > incomingmessage
+mv incomingmessage $scannedFile
+
+# erase intermediate files
+srm -m reversefile
+srm -m reversefilestripped
+
+}
+
+
+#----------------------
+#checkAuthentication.sh
+#----------------------
+
+checkAuthentication()
+{
+
+# ask for key 
+read -p "enter key: " sessionKey
+
+# derive authentication key
+printf "%s" $sessionKey > sessionKeyFile
+cat sessionKeyFile keyChoiceAuth > authKeyFile5
+hash=$(gpg --with-colons --print-md sha256 authKeyFile5)
+
+# write hash to file, remove formatting to get authKeyFile, write to variable authKey
+printf "%s\n" "$hash" > authKeyFile4
+sed '1s/:/\n delete\n/g' authKeyFile4 > authKeyFile3
+sed '1,/delete/d' authKeyFile3 > authKeyFile2
+sed '1,/delete/d' authKeyFile2 > authKeyFile1
+sed /'delete'/,'$'d authKeyFile1 > authKeyFile
+authKey=$(cat authKeyFile)
+
+srm -m sessionKeyFile
+srm -m authKeyFile?
+srm -m authKeyFile
+
+#save first line containing hmac into file
+head -n 1 $scannedFile > includedAuthFile
+
+#remove hmac from message
+sed '1d' $scannedFile > scannedFile1
+mv scannedFile1 $scannedFile
+
+#calculate hmac of $scannedFile
+newAuth=$(cat $scannedFile | openssl dgst -sha256 -hmac $authKey)
+printf "%s\n" "$newAuth" > newAuthFile
+
+#compare hmac of $scannedFile with included hmac
+diff includedAuthFile newAuthFile
+
+}
+
+
+
+
+#----------------------
+#timestampProcess.sh
+#----------------------
+
+timestampProcess () 
+{
+
+# second line of $scannedFile is correctly formatted timestamp, already extracted into file 'timestamp'
+
+read timestampAdd < timestamp
+
+# save ciphertext in file to whose name timestamp is added
+mv -i $scannedFile.asc cipherTextReceived/$scannedFile$timestampAdd.asc
+
+# print plaintext to terminal
+cat $scannedFile
+
+# erase plaintext $scannedFile
+srm -m $scannedFile
+
+}
+
+#----------------------
+#noTimestampProcess.sh
+#----------------------
+
+noTimestampProcess () 
+{
+
+# second line of $scannedFile does not contain timestamp
+
+printf "%s\n" "no formatted timestamp found, store under filename $scannedFile.asc"
+
+# save ciphertext
+mv -i $scannedFile.asc cipherTextReceived/$scannedFile.asc
+
+# print plaintext to terminal
+cat $scannedFile
+
+# erase plaintext $scannedFile
+srm -m $scannedFile
+
+}
+
