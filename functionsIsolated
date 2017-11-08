@@ -24,9 +24,19 @@ counterTimestamp()
 {
 
 # increase integer contained in file messageCounter
-counter=$(cat messageCounter)
-let counter++
-printf "%s" "$counter" > messageCounter
+# file messageCounter is locked for increment
+lockdir=/tmp/cryptScript.lock
+if mkdir "$lockdir"
+then
+  trap 'rm -rf "$lockdir"' 0 1 2 3 15
+  counter=$(cat messageCounter)
+  let counter++
+  printf "%s" "$counter" > messageCounter
+  rm -rf "$lockdir"
+else
+  echo "other process accessing file messageCounter, exiting"
+  exit 0
+fi
 
 # include message counter in plaintextfile
 printf "%s\n" "message number: $counter" | cat - $chosenFile >> intermediateFile
@@ -37,6 +47,9 @@ fileDate=$(date "+-%y%b%d-%H.%M.%S")
 
 # add timestamp to plaintext file and to its filename
 printf "%s\n" "$fileDate" | cat - $chosenFile >> $chosenFile$fileDate
+
+# erase plaintext $chosenFile
+srm -m $chosenFile
 
 }
 
@@ -55,34 +68,29 @@ read -p "enter key: " sessionKey
 printf "%s" $sessionKey | cat - keyChoiceAuth > authKeyFile5
 hash=$(gpg --with-colons --print-md sha256 authKeyFile5)
 
-# write raw authentication key 'hash' to file authKeyFile4, then remove formatting to get authKeyFile
+# write hash to file, remove formatting to get authKeyFile, write to variable authKey
 printf "%s\n" "$hash" 			> authKeyFile4
 sed '1s/:/\n delete\n/g' authKeyFile4 	> authKeyFile3
 sed '1,/delete/d' authKeyFile3 		> authKeyFile2
 sed '1,/delete/d' authKeyFile2 		> authKeyFile1
 sed /'delete'/,'$'d authKeyFile1 	> authKeyFile
-
-# erase 5 auxiliary files authKeyFile1, ..., authKeyFile5 
-srm -m authKeyFile?
-
-# write contents of authKeyFile into variable authKey
 authKey=$(cat authKeyFile)
+ 
+srm -m authKeyFile?
+srm -m authKeyFile
 
 # calculate hmac of $inputfile using authKey
 authLine=$(cat $inputfile | openssl dgst -sha256 -hmac $authKey)
-
-# store hmac in authLineFile
 printf "%s\n" "$authLine" > authLineFile
 
 # add hmac contained in authLineFile to $inputfile
 cat authLineFile $inputfile > auth$inputfile
 mv auth$inputfile $inputfile
-  
-# erase now unnecessary files 
+
 srm -m authLineFile
-srm -m authKeyFile
 
 }
+
 
 #----------------------
 #encryptFile.sh
@@ -121,22 +129,45 @@ mv padded$inputfile $inputfile
 rm  padPart
 
 # encrypt $inputfile
-read -p "enter key: " keystring
-gpg --armour --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count=65011712 --batch --passphrase $keystring -c --symmetric $inputfile
+read -p "enter key again: " keystring
 
-# remove plaintext $inputfile
-srm -m $inputfile
+# check for correct key entered
+if [ $keystring = $sessionKey ]
+then
+  # encrypt $inputfile
+  gpg --armour --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count=65011712 --batch --passphrase $keystring -c --symmetric $inputfile
 
+  # erase plaintext $inputfile
+  srm -m $inputfile
+else
+  read -p "wrong key, one more chance to enter correct key: " keystring
+  if [ $keystring = $sessionKey ]
+  then 
+    # encrypt $inputfile
+    gpg --armour --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count=65011712 --batch --passphrase $keystring -c --symmetric $inputfile
+
+    # erase plaintext $inputfile
+    srm -m $inputfile
+  else
+    # prepare to exit because of wrong key
+    printf "%s\n" "wrong key, exiting"
+
+    # erase plaintext $inputfile
+    srm -m $inputfile
+
+    exit 0
+  fi
+fi
 
 
 else
 # padding not added
 
 # encrypt $inputfile
-read -p "enter key: " keystring
+read -p "enter key again: " keystring
 gpg --armour --cipher-algo AES256 --s2k-digest-algo SHA512 --s2k-count=65011712 --batch --passphrase $keystring -c --symmetric $inputfile
 
-# remove plaintext $inputfile
+# erase plaintext $inputfile
 srm -m $inputfile
 
 fi 
@@ -179,9 +210,6 @@ fi
 scanQRcode () 
 {
 
-# identify user name needed for path to directory used by QR Journal
-identity=$(whoami)
-
 # start QR Journal
 open -a QR\ Journal
 
@@ -196,7 +224,7 @@ printf "%s\n" "quit QR Journal"
 read -p "enter filename for QR scan: " scannedFile
 
 # identify file containing scanned text
-qrScanData=/Users/$identity/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application\ Support/QRJournal/QRJournal.storedata
+qrScanData=$HOME/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application\ Support/QRJournal/QRJournal.storedata
 
 }
 
@@ -231,7 +259,7 @@ rm qrScanData?
 
 # erase scanned image and text file containing scanned text
 olddir=$(pwd)
-cd "/Users/$identity/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application Support/QRJournal"
+cd "$HOME/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application Support/QRJournal"
 rm *.jpg
 rm QRJournal.storedata
 cd $olddir
@@ -249,6 +277,12 @@ decryptFile ()
 printf "%s\n" "file $scannedFile.asc will be decrypted"
 read -p "enter key: " keystring
 printf "%s" "$keystring" | gpg -o $scannedFile --batch --passphrase-fd 0 --decrypt $scannedFile.asc
+
+# add minimal pad to ensure sed processing works correctly
+printf "\n%s\n" "minimalPad" > minPadFile
+cat $scannedFile minPadFile > paddedMessage
+mv paddedMessage $scannedFile
+rm minPadFile
 
 # reverse sequence of lines
 sed -n '1!G;h;$p' $scannedFile > reversefile
@@ -274,43 +308,38 @@ srm -m reversefilestripped
 checkAuthentication()
 {
 
-# ask for key 
-read -p "enter key: " sessionKey
+sessionKey=$keystring
 
 # derive authentication key
-printf "%s" $sessionKey > sessionKeyFile
-cat sessionKeyFile keyChoiceAuth > authKeyFile5
+printf "%s" $sessionKey | cat - keyChoiceAuth > authKeyFile5
 hash=$(gpg --with-colons --print-md sha256 authKeyFile5)
 
 # write hash to file, remove formatting to get authKeyFile, write to variable authKey
-printf "%s\n" "$hash" > authKeyFile4
+printf "%s\n" "$hash"                 > authKeyFile4
 sed '1s/:/\n delete\n/g' authKeyFile4 > authKeyFile3
-sed '1,/delete/d' authKeyFile3 > authKeyFile2
-sed '1,/delete/d' authKeyFile2 > authKeyFile1
-sed /'delete'/,'$'d authKeyFile1 > authKeyFile
+sed '1,/delete/d' authKeyFile3        > authKeyFile2
+sed '1,/delete/d' authKeyFile2        > authKeyFile1
+sed /'delete'/,'$'d authKeyFile1      > authKeyFile
 authKey=$(cat authKeyFile)
 
-srm -m sessionKeyFile
 srm -m authKeyFile?
 srm -m authKeyFile
 
-#save first line containing hmac into file
+# save first line containing hmac into file
 head -n 1 $scannedFile > includedAuthFile
 
-#remove hmac from message
+# remove hmac from message
 sed '1d' $scannedFile > scannedFile1
 mv scannedFile1 $scannedFile
 
-#calculate hmac of $scannedFile
+# calculate hmac of $scannedFile
 newAuth=$(cat $scannedFile | openssl dgst -sha256 -hmac $authKey)
 printf "%s\n" "$newAuth" > newAuthFile
 
-#compare hmac of $scannedFile with included hmac
+# compare hmac of $scannedFile with included hmac
 diff includedAuthFile newAuthFile
 
 }
-
-
 
 
 #----------------------

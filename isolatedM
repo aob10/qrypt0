@@ -1,8 +1,8 @@
 #!/bin/bash
 #: Title		: isolatedM
-#: Date			: 2017-10-13
+#: Date			: 2017-11-8
 #: Author		: "Andreas O. Bender" <andreasobender@mac.com>
-#: Version		: 0.1
+#: Version		: 0.2
 #: Description		: control symmetric encryption and authentication on an isolated computer
 #: Options		: None
 #: Required files	: firstPart.ps, secondPart.ps, messageCounter, keyChoiceAuth
@@ -93,7 +93,7 @@ case $choice in
 
     # check authentication of plaintext
     checkAuthentication
-    if [ $?=0 ]
+    if [ $? = 0 ]
     then
       printf "\n%s\n" "$scannedFile successfully authenticated"
 
@@ -117,7 +117,8 @@ case $choice in
     else
       printf "\n%s\n" "authentication failed"
 
-      # remove files containing hmac
+      # remove files containing hmac and plaintext
+      srm -m $scannedFile
       srm -m newAuthFile
       srm -m includedAuthFile
 
@@ -126,6 +127,13 @@ case $choice in
   else
 
     printf "\n%s\n" "file is not formatted as PGP ciphertext"
+
+    # erase scanned image and text file containing scanned text
+    olddir=$(pwd)
+    cd "$HOME/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application Support/QRJournal"
+    rm *.jpg
+    rm QRJournal.storedata
+    cd $olddir
 
   fi 
   ;;

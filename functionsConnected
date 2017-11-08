@@ -51,9 +51,6 @@ fi
 scanQRcode () 
 {
 
-# identify user name needed for path to directory used by QR Journal
-identity=$(whoami)
-
 # start QR Journal
 open -a QR\ Journal
 
@@ -68,7 +65,7 @@ printf "%s\n" "quit QR Journal"
 read -p "enter filename for QR scan: " scannedFile
 
 # identify file containing scanned text
-qrScanData=/Users/$identity/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application\ Support/QRJournal/QRJournal.storedata
+qrScanData=$HOME/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application\ Support/QRJournal/QRJournal.storedata
 
 }
 
@@ -103,7 +100,7 @@ rm qrScanData?
 
 # erase scanned image and text file containing scanned text
 olddir=$(pwd)
-cd "/Users/$identity/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application Support/QRJournal"
+cd "$HOME/Library/Containers/com.joshjacob.qrjournal/Data/Library/Application Support/QRJournal"
 rm *.jpg
 rm QRJournal.storedata
 cd $olddir
